@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEON//ASCENT</title>
+<style>
+html,body{margin:0;background:#05070f;color:#f0faff;font-family:Consolas,monospace;min-height:100%;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;height:100vh}
+#wrap{position:relative;width:min(1100px,100vw);height:min(650px,100vh);display:flex;align-items:center;justify-content:center}
+canvas{width:1100px;height:650px;max-width:100vw;max-height:100vh;image-rendering:auto;border:1px solid #16304a;background:#05070f}
+#start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;background:rgba(2,5,14,.72);text-align:center;cursor:pointer}
+#start h1{font-size:clamp(30px,6vw,64px);margin:0;color:#00e6ff}
+#start p{font-size:16px;color:#d8efff;max-width:700px;line-height:1.6}
+#start .hint{color:#00e6ff;margin-top:18px}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="1100" height="650"></canvas>
+<div id="start"><h1>NEON//ASCENT</h1><p>Browser edition · Wall-jump · Dash · Combat · Snowfall</p><div class="hint">CLICK OR PRESS ANY KEY TO START</div></div>
+</div>
+<script>
+'use strict';
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d'),start=document.getElementById('start');
+const W=1100,H=650,BORDER=18,FPS=60,TAU=Math.PI*2;
+const C={black:'#05070f',dark:'#090c19',grid:'#141e32',white:'#f0faff',cyan:'#00e6ff',blue:'#3c78ff',purple:'#aa46ff',pink:'#ff3cb4',red:'#ff4650',green:'#32ff96',yellow:'#ffdc46',orange:'#ff8c28'};
+let audio=null,soundReady=false;
+function initAudio(){if(soundReady)return; try{audio=new (window.AudioContext||window.webkitAudioContext)(); soundReady=true;if(audio.state==='suspended')audio.resume();}catch(e){}}
+function tone(name){if(!soundReady)return;const map={jump:[520,.09,.20,'sine'],wall_jump:[760,.11,.22,'sine'],shoot:[1050,.045,.13,'square'],dash:[180,.13,.24,'sawtooth'],hit:[110,.10,.20,'square'],enemy_shoot:[260,.07,.14,'sine'],heal:[880,.18,.18,'sine'],kill:[1350,.12,.18,'triangle']};const a=map[name];if(!a)return;const o=audio.createOscillator(),g=audio.createGain(),now=audio.currentTime;o.type=a[3];o.frequency.setValueAtTime(a[0],now);o.frequency.exponentialRampToValueAtTime(Math.max(40,a[0]*.62),now+a[1]);g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(a[2],now+.008);g.gain.exponentialRampToValueAtTime(.001,now+a[1]);o.connect(g).connect(audio.destination);o.start(now);o.stop(now+a[1]+.02)}
+['keydown','pointerdown'].forEach(ev=>window.addEventListener(ev,()=>{initAudio();start.classList.add('hidden')},{once:false}));
+const platforms=[{x:0,y:570,w:1100,h:80},{x:90,y:480,w:210,h:25},{x:365,y:400,w:210,h:25},{x:640,y:315,w:200,h:25},{x:880,y:450,w:180,h:25},{x:520,y:270,w:170,h:25}];
+const keys={};let pressed={};
+addEventListener('keydown',e=>{if(['Space','ArrowLeft','ArrowRight','ArrowUp'].includes(e.code))e.preventDefault();if(!keys[e.code])pressed[e.code]=true;keys[e.code]=true;initAudio();start.classList.add('hidden')});
+addEventListener('keyup',e=>keys[e.code]=false);
+function consume(code){const v=!!pressed[code];delete pressed[code];return v}
+function rectsOverlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function inflate(r,x,y){return {x:r.x-x/2,y:r.y-y/2,w:r.w+x,h:r.h+y}}
+function rand(a,b){return a+Math.random()*(b-a)}
+function randi(a,b){return Math.floor(rand(a,b+1))}
+let particles=[],snow=[],stars=[];
+for(let i=0;i<140;i++)snow.push({x:randi(0,W),y:randi(0,H),speed:rand(1,3),size:randi(1,3),drift:rand(-.5,.5)});
+for(let i=0;i<100;i++)stars.push({x:randi(0,W),y:randi(0,H),speed:rand(.2,1.2),size:randi(1,3)});
+function particle(x,y,color){particles.push({x,y,vx:rand(-4,4),vy:rand(-4,4),life:randi(20,45),size:randi(2,5),color:color||[C.cyan,C.blue,C.purple,C.pink,C.white][randi(0,4)]})}
+function explosion(x,y,n=25){for(let i=0;i<n;i++)particle(x,y)}
+class Player{
+ constructor(){this.w=40;this.h=60;this.reset()}
+ reset(){this.x=120;this.y=400;this.vy=0;this.speed=6;this.gravity=.8;this.jumpPower=-15;this.dir=1;this.onGround=false;this.doubleJump=true;this.wallLeft=false;this.wallRight=false;this.wallJumpLock=0;this.maxHp=100;this.hp=100;this.inv=0;this.flash=0;this.maxEnergy=100;this.energy=100;this.energyRegen=.18;this.dashSpeed=18;this.dashTimer=0;this.dashDuration=8;this.dashCooldown=0;this.dashCooldownMax=45;this.dashCost=25;this.shootCooldown=0;this.shootCooldownMax=14;this.shootCost=5;this.kx=0;this.ky=0}
+ get rect(){return{x:this.x,y:this.y,w:this.w,h:this.h}}
+ jump(){if(this.onGround){this.vy=this.jumpPower;this.onGround=false;this.doubleJump=true;tone('jump');particle(this.x+20,this.y+60,C.cyan)}else if(this.wallLeft){this.vy=this.jumpPower;this.x+=4;this.dir=1;this.doubleJump=true;this.wallJumpLock=8;tone('wall_jump');explosion(this.x+20,this.y+30,10)}else if(this.wallRight){this.vy=this.jumpPower;this.x-=4;this.dir=-1;this.doubleJump=true;this.wallJumpLock=8;tone('wall_jump');explosion(this.x+20,this.y+30,10)}else if(this.doubleJump){this.vy=this.jumpPower*.9;this.doubleJump=false;tone('jump');explosion(this.x+20,this.y+30,8)}}
+ dash(){if(this.dashCooldown<=0&&this.energy>=this.dashCost&&this.dashTimer<=0){this.energy-=this.dashCost;this.dashTimer=this.dashDuration;this.dashCooldown=this.dashCooldownMax;tone('dash');explosion(this.x+20,this.y+30,10)}}
+ shoot(){if(this.shootCooldown<=0&&this.energy>=this.shootCost&&playerBullets.length<6){this.energy-=this.shootCost;this.shootCooldown=this.shootCooldownMax;const bx=this.dir===1?this.x+this.w:this.x;playerBullets.push({x:bx,y:this.y+this.h/2-4,w:18,h:8,vx:14*this.dir,damage:1});tone('shoot');particle(bx,this.y+30,C.cyan)}}
+ damage(d,enemyX){if(this.inv>0)return;this.hp-=d;tone('hit');this.inv=55;this.flash=10;this.kx=enemyX<this.x+20?9:-9;this.ky=-8;explosion(this.x+20,this.y+30,18);if(this.hp<=0){this.hp=0;gameState=2}}
+ move(){if(this.dashTimer>0){this.x+=this.dashSpeed*this.dir;this.dashTimer--;return}let mx=0;if(keys.KeyA||keys.ArrowLeft){mx-=this.speed;this.dir=-1}if(keys.KeyD||keys.ArrowRight){mx+=this.speed;this.dir=1}this.x+=mx}
+ physics(){const oldBottom=this.y+this.h;this.vy+=this.gravity;this.wallLeft=false;this.wallRight=false;if(this.x<=BORDER&&this.vy>2){this.wallLeft=true;this.vy=Math.min(this.vy,4.5)}if(this.x+this.w>=W-BORDER&&this.vy>2){this.wallRight=true;this.vy=Math.min(this.vy,4.5)}this.y+=this.vy;if(Math.abs(this.kx)>.1){this.x+=this.kx;this.kx*=.82}else this.kx=0;if(Math.abs(this.ky)>.1){this.y+=this.ky;this.ky*=.82}else this.ky=0;this.onGround=false;for(const p of platforms){if(rectsOverlap(this.rect,p)&&this.vy>=0&&oldBottom<=p.y){this.y=p.y-this.h;this.vy=0;this.onGround=true;this.doubleJump=true}}if(this.x<BORDER){this.x=BORDER;this.wallLeft=true}if(this.x+this.w>W-BORDER){this.x=W-BORDER-this.w;this.wallRight=true}if(this.y<BORDER){this.y=BORDER;if(this.vy<0)this.vy=0}if(this.y+this.h>H-BORDER){this.y=H-BORDER-this.h;if(this.vy>0)this.vy=0;this.onGround=true;this.doubleJump=true}}
+ update(){this.move();this.physics();this.energy=Math.min(this.maxEnergy,this.energy+this.energyRegen);if(this.inv>0)this.inv--;if(this.flash>0)this.flash--;if(this.dashCooldown>0)this.dashCooldown--;if(this.shootCooldown>0)this.shootCooldown--;if(this.wallJumpLock>0)this.wallJumpLock--}
+ draw(){if(this.inv>0&&Math.floor(this.inv/8)%2===0)return;let body=this.flash>0?C.white:C.cyan;ctx.fillStyle=body;roundRect(this.x,this.y,this.w,this.h,6);ctx.fill();ctx.fillStyle=C.dark;roundRect(this.x+6,this.y+8,this.w-12,this.h-16,4);ctx.fill();ctx.fillStyle=C.cyan;ctx.beginPath();ctx.arc(this.x+20,this.y+30,7,0,TAU);ctx.fill();ctx.fillStyle=C.white;ctx.beginPath();ctx.arc(this.dir===1?this.x+31:this.x+9,this.y+16,4,0,TAU);ctx.fill();if(this.dashTimer>0){for(let i=0;i<4;i++){ctx.strokeStyle='#006496';ctx.lineWidth=2;roundRect(this.x-this.dir*i*12,this.y+5,this.w,this.h-10,2);ctx.stroke()}}}
+}
+class Enemy{
+ constructor(x,y){this.x=x;this.y=y;this.w=42;this.h=34;this.startY=y;this.hp=3;this.maxHp=3;this.speed=rand(1.2,2);this.dir=Math.random()<.5?-1:1;this.float=rand(0,6);this.attack=randi(70,150);this.dead=false}
+ get rect(){return{x:this.x,y:this.y,w:this.w,h:this.h}}
+ shoot(){if(enemyBullets.length>=12)return;let dx=player.x+20-(this.x+21),dy=player.y+30-(this.y+17),d=Math.hypot(dx,dy)||1;enemyBullets.push({x:this.x+16,y:this.y+12,w:10,h:10,vx:dx/d*5,vy:dy/d*5});tone('enemy_shoot')}
+ update(){if(this.dead)return;this.x+=this.speed*this.dir;if(this.x<=20)this.dir=1;if(this.x+this.w>=W-20)this.dir=-1;this.float+=.04;this.y=this.startY+Math.sin(this.float)*25;this.attack--;if(this.attack<=0){this.shoot();this.attack=randi(90,170)}if(rectsOverlap(this.rect,player.rect))player.damage(12,this.x+21)}
+ damage(d){this.hp-=d;explosion(this.x+21,this.y+17,7);if(this.hp<=0){this.dead=true;tone('kill');explosion(this.x+21,this.y+17,30);return true}return false}
+ draw(){if(this.dead)return;ctx.fillStyle=C.purple;roundRect(this.x,this.y,this.w,this.h,8);ctx.fill();ctx.fillStyle=C.dark;roundRect(this.x+6,this.y+6,this.w-12,this.h-12,5);ctx.fill();ctx.fillStyle=C.pink;ctx.beginPath();ctx.arc(this.x+21,this.y+17,7,0,TAU);ctx.fill();ctx.fillStyle='#1e0a1e';ctx.fillRect(this.x,this.y-9,this.w,5);ctx.fillStyle=C.pink;ctx.fillRect(this.x,this.y-9,this.w*(this.hp/this.maxHp),5)}
+}
+class Booster{
+ constructor(x,y){this.x=x;this.baseY=y;this.float=rand(0,6);this.active=true;this.w=26;this.h=26}
+ get rect(){return{x:this.x,y:this.y,w:this.w,h:this.h}}
+ update(){this.float+=.05;this.y=this.baseY+Math.sin(this.float)*5}
+ draw(){if(!this.active)return;ctx.fillStyle=C.green;roundRect(this.x,this.y,26,26,7);ctx.fill();ctx.fillStyle=C.white;ctx.fillRect(this.x+10,this.y+5,6,16);ctx.fillRect(this.x+5,this.y+10,16,6)}
+}
+const player=new Player();let enemies=[],playerBullets=[],enemyBullets=[],booster=null,score=0,spawnTimer=900,gameState=0;
+function resetGame(){player.reset();enemies=[new Enemy(350,250),new Enemy(650,190),new Enemy(900,280)];playerBullets=[];enemyBullets=[];particles=[];booster=null;score=0;spawnTimer=900;gameState=0}
+function spawnEnemy(){if(enemies.length>=6)return;let spots=[[330,230],[520,300],[700,190],[850,260],[960,350]];spots.sort(()=>Math.random()-.5);for(const [x,y] of spots){let r={x,y,w:42,h:34};if(rectsOverlap(r,inflate(player.rect,180,180)))continue;let blocked=enemies.some(e=>rectsOverlap(r,inflate(e.rect,60,60)));if(!blocked){enemies.push(new Enemy(x,y));explosion(x+21,y+17,15);return}}}
+function spawnBooster(){if(booster||player.hp>=player.maxHp)return;const spots=[[150,430],[430,350],[700,265],[930,400],[500,520]],p=spots[randi(0,spots.length-1)];booster=new Booster(p[0],p[1])}
+function update(){
+ if(gameState!==0)return;
+ if(consume('Escape'))gameState=1;
+ if(consume('KeyW'))player.jump();
+ if(consume('ShiftLeft')||consume('ShiftRight'))player.dash();
+ if(consume('Space'))player.shoot();
+ player.update();
+ for(const e of enemies)e.update();
+ for(let i=playerBullets.length-1;i>=0;i--){const b=playerBullets[i];b.x+=b.vx;if(b.x+b.w<0||b.x>W){playerBullets.splice(i,1);continue}let hitPlatform=platforms.some(p=>rectsOverlap(b,p));if(hitPlatform){playerBullets.splice(i,1);continue}for(const e of enemies){if(!e.dead&&rectsOverlap(b,e.rect)){if(e.damage(b.damage))score+=100;playerBullets.splice(i,1);break}}}
+ for(let i=enemyBullets.length-1;i>=0;i--){const b=enemyBullets[i];b.x+=b.vx;b.y+=b.vy;if(b.x+b.w<0||b.x>W||b.y+b.h<0||b.y>H){enemyBullets.splice(i,1);continue}if(rectsOverlap(b,player.rect)){player.damage(10,b.x+5);enemyBullets.splice(i,1);continue}if(platforms.some(p=>rectsOverlap(b,p)))enemyBullets.splice(i,1)}
+ enemies=enemies.filter(e=>!e.dead);
+ if(enemies.length<6){spawnTimer--;if(spawnTimer<=0){spawnEnemy();spawnTimer=900}}else spawnTimer=900;
+ if(!booster&&player.hp<70&&Math.floor(Math.random()*180)===0)spawnBooster();
+ if(booster){booster.update();if(rectsOverlap(player.rect,booster.rect)){const old=player.hp;player.hp=Math.min(100,player.hp+30);if(player.hp>old){tone('heal');explosion(booster.x+13,booster.y+13,18);booster=null}}}
+ for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=.08;p.life--;if(p.life<=0)particles.splice(i,1)}
+ for(const s of snow){s.y+=s.speed;s.x+=s.drift;if(s.y>H){s.y=randi(-30,-5);s.x=randi(0,W)}if(s.x<0)s.x=W;if(s.x>W)s.x=0}
+ for(const s of stars){s.y+=s.speed;if(s.y>H){s.y=0;s.x=randi(0,W)}}
+}
+function roundRect(x,y,w,h,r){ctx.beginPath();if(ctx.roundRect){ctx.roundRect(x,y,w,h,r)}else{ctx.rect(x,y,w,h)}}
+function drawBackground(){ctx.fillStyle=C.black;ctx.fillRect(0,0,W,H);ctx.strokeStyle=C.grid;ctx.lineWidth=1;for(let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}for(let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}for(const s of stars){ctx.fillStyle=C.white;ctx.beginPath();ctx.arc(s.x,s.y,s.size,0,TAU);ctx.fill()}}
+function drawBorders(){ctx.fillStyle='#0c1426';ctx.fillRect(0,0,W,BORDER);ctx.fillRect(0,H-BORDER,W,BORDER);ctx.fillRect(0,0,BORDER,H);ctx.fillRect(W-BORDER,0,BORDER,H);ctx.strokeStyle=C.cyan;ctx.lineWidth=2;[[BORDER,0,BORDER,H],[W-BORDER,0,W-BORDER,H],[0,BORDER,W,BORDER],[0,H-BORDER,W,H-BORDER]].forEach(a=>{ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(a[2],a[3]);ctx.stroke()})}
+function drawPlatforms(){for(const p of platforms){ctx.fillStyle='#0f192d';ctx.fillRect(p.x,p.y,p.w,p.h);ctx.fillStyle=C.cyan;ctx.fillRect(p.x,p.y,p.w,3);for(let x=p.x+10;x<p.x+p.w-10;x+=35){ctx.fillStyle=C.blue;ctx.fillRect(x,p.y+p.h-7,10,2)}}}
+function drawBullets(){for(const b of playerBullets){ctx.fillStyle=C.cyan;roundRect(b.x,b.y,b.w,b.h,4);ctx.fill()}for(const b of enemyBullets){ctx.fillStyle=C.red;ctx.beginPath();ctx.arc(b.x+5,b.y+5,6,0,TAU);ctx.fill();ctx.fillStyle=C.orange;ctx.beginPath();ctx.arc(b.x+5,b.y+5,3,0,TAU);ctx.fill()}}
+function drawParticles(){for(const p of particles){ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,TAU);ctx.fill()}}
+function drawSnow(){for(const s of snow){ctx.fillStyle=C.white;ctx.beginPath();ctx.arc(s.x,s.y,s.size,0,TAU);ctx.fill()}}
+function drawUI(){ctx.fillStyle=C.white;ctx.font='16px Consolas';ctx.fillText('HP',20,28);ctx.fillStyle='#30151b';ctx.fillRect(60,16,180,12);ctx.fillStyle=C.red;ctx.fillRect(60,16,180*(player.hp/100),12);ctx.fillStyle=C.white;ctx.fillText('ENERGY',20,51);ctx.fillStyle='#11223b';ctx.fillRect(90,39,150,12);ctx.fillStyle=C.cyan;ctx.fillRect(90,39,150*(player.energy/100),12);ctx.fillText('SCORE: '+score,20,80);ctx.fillText('A/D = MOVE   W = JUMP / DOUBLE / WALL   SPACE = FIRE   SHIFT = DASH   ESC = PAUSE',300,H-35);}
+function drawOverlay(){if(gameState===1){ctx.fillStyle='rgba(0,0,0,.67)';ctx.fillRect(0,0,W,H);ctx.fillStyle=C.cyan;ctx.font='bold 70px Consolas';ctx.textAlign='center';ctx.fillText('PAUSED',W/2,270);ctx.font='22px Consolas';ctx.fillStyle=C.white;ctx.fillText('PRESS ESC TO CONTINUE',W/2,335);ctx.textAlign='left'}if(gameState===2){ctx.fillStyle='rgba(0,0,0,.75)';ctx.fillRect(0,0,W,H);ctx.textAlign='center';ctx.fillStyle=C.red;ctx.font='bold 70px Consolas';ctx.fillText('SYSTEM FAILURE',W/2,260);ctx.fillStyle=C.white;ctx.font='42px Consolas';ctx.fillText('FINAL SCORE: '+score,W/2,335);ctx.fillStyle=C.cyan;ctx.font='22px Consolas';ctx.fillText('PRESS R TO RESTART',W/2,405);ctx.textAlign='left'}}
+function draw(){drawBackground();drawBorders();drawPlatforms();drawBullets();for(const e of enemies)e.draw();if(booster)booster.draw();player.draw();drawParticles();drawSnow();drawUI();drawOverlay()}
+function frame(){if(gameState===2&&consume('KeyR'))resetGame();if(gameState===1&&consume('Escape'))gameState=0;update();draw();requestAnimationFrame(frame)}
+resetGame();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
